@@ -40,7 +40,7 @@ def parse_args():
         help="the entity (team) of wandb's project")
 
     # Algorithm specific arguments
-    parser.add_argument("--env-id", type=str, default="Hopper-v4",
+    parser.add_argument("--env-id", type=str, default="Humanoid-v3",
         help="the id of the environment")
     parser.add_argument("--total-timesteps", type=int, default=int(1e6),
         help="total timesteps of the experiments")
@@ -97,6 +97,9 @@ def parse_args():
     parser.add_argument("--num-iterations-obs-norm-init", type=int, default=50,
         help="number of iterations to initialize the observations normalization parameters")
 
+    parser.add_argument("--bonus_type", default="icm", choices=["icm", "dynamics", "disagreement"])
+    parser.add_argument("--bonus_factor", default=1.0, type=float)
+
     parser.add_argument("--use-ppo-hyper", action="store_true")
 
     args = parser.parse_args()
@@ -110,10 +113,11 @@ def parse_args():
     else:
         args.batch_size = int(args.num_envs * args.num_steps)
         args.num_minibatches = int(args.batch_size // 64)
+        args.gamma = 0.99
         args.minibatch_size = 64
         args.update_epochs = 10
-        args.num_envs = 1
-        args.num_steps = 1024
+        args.num_envs = 8
+        args.num_steps = 128
     # fmt: on
     return args
 
@@ -238,48 +242,91 @@ class Agent(nn.Module):
             self.rollout_by_pi_e = True
             print("Switch to pi_E")
         
-
 class ICMModel(nn.Module):
     def __init__(self, envs):
-        # predict next_state
         super().__init__()
+        state_dim = envs.single_observation_space.shape[0]
+        action_dim = envs.single_action_space.shape[0]
+        self.phi = nn.Sequential(
+            layer_init(nn.Linear(state_dim, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, state_dim)),
+        )
+
+        # predict next_state
         self.forward_net = nn.Sequential(
-            layer_init(nn.Linear(envs.single_observation_space.shape[0] + envs.single_action_space.shape[0], 256)),
+            layer_init(nn.Linear(state_dim + action_dim, 256)),
             nn.ReLU(),
             layer_init(nn.Linear(256, 256)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, envs.single_observation_space.shape[0]))
+            layer_init(nn.Linear(256, state_dim))
         )
 
         # predict action
         self.inverse_net = nn.Sequential(
-            layer_init(nn.Linear(envs.single_observation_space.shape[0] + envs.single_observation_space.shape[0], 256)),
+            layer_init(nn.Linear(state_dim + state_dim, 256)),
             nn.ReLU(),
             layer_init(nn.Linear(256, 256)),
             nn.ReLU(),
-            layer_init(nn.Linear(256, envs.single_action_space.shape[0]))
+            layer_init(nn.Linear(256, action_dim))
         )
 
-    def forward(self, obs, action, next_obs):
-        assert obs.shape[0] == next_obs.shape[0]
-        assert obs.shape[0] == action.shape[0]
+    def forward(self, state, action, next_state):
+        assert state.shape[0] == next_state.shape[0]
+        assert state.shape[0] == action.shape[0]
 
-        next_obs_hat = self.forward_net(torch.cat([obs, action], dim=-1))
-        action_hat = self.inverse_net(torch.cat([obs, next_obs], dim=-1))
+        batch_size = state.shape[0]
+        all_states = torch.cat([state, next_state], dim=0)
+        encoded_all_states = self.phi(all_states)
 
-        forward_error = torch.norm(next_obs - next_obs_hat,
+        state, next_state = encoded_all_states.split(batch_size, dim=0)
+
+        next_state_hat = self.forward_net(torch.cat([state, action], dim=-1))
+
+        forward_error = torch.norm(next_state - next_state_hat,
                                    dim=-1,
                                    p=2,
                                    keepdim=True)
+
+        # if use dynamics only, we do not train phi based on inverse dynamics
+        if args.bonus_type == "dynamics":
+            return forward_error, torch.zeros_like(forward_error, device=device)
+
+        action_hat = self.inverse_net(torch.cat([state, next_state], dim=-1))
         inverse_error = torch.norm(action - action_hat,
                                     dim=-1,
                                     p=2,
                                     keepdim=True)
 
         return forward_error, inverse_error
-    
 
+class DisagreementModel(nn.Module):
+    def __init__(self, envs, n_models=5):
+        super().__init__()
+        state_dim = envs.single_observation_space.shape[0]
+        action_dim = envs.single_action_space.shape[0]
+        self.ensemble = nn.ModuleList([
+            nn.Sequential(nn.Linear(state_dim + action_dim, 256),
+                          nn.ReLU(), nn.Linear(256, state_dim))
+            for _ in range(n_models)
+        ])
 
+    def forward(self, obs, action, next_obs):
+        #import ipdb; ipdb.set_trace()
+        assert obs.shape[0] == next_obs.shape[0]
+        assert obs.shape[0] == action.shape[0]
+
+        errors = 0
+        preds = []
+        for model in self.ensemble:
+            next_obs_hat = model(torch.cat([obs, action], dim=-1))
+            preds.append(next_obs_hat)
+            model_error = torch.norm(next_obs_hat - next_obs, dim=-1, p=2, keepdim=True)
+            errors += model_error
+
+        preds = torch.stack(preds, dim=0)
+
+        return errors, torch.var(preds, dim=0).mean(dim=-1)
 
 class RewardForwardFilter:
     def __init__(self, gamma):
@@ -296,7 +343,7 @@ class RewardForwardFilter:
 
 if __name__ == "__main__":
     args = parse_args()
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.env_id}__{args.exp_name}__{args.bonus_type}__{args.bonus_factor}__{args.seed}"
     if args.track:
         import wandb
 
@@ -340,7 +387,10 @@ if __name__ == "__main__":
     # assert isinstance(envs.action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
-    icm_model = ICMModel(envs).to(device)
+    if args.bonus_type in ["icm", "dynamics"]:
+        icm_model = ICMModel(envs).to(device)
+    else:
+        icm_model = DisagreementModel(envs).to(device)
     combined_parameters = list(agent.parameters()) + list(icm_model.parameters())
     optimizer = optim.Adam(
         combined_parameters,
@@ -402,6 +452,10 @@ if __name__ == "__main__":
     old_min_objective_value = None
     new_min_objective_value = None
 
+    
+    performance = []
+    np_filename = f"eipo_{args.bonus_type}_{args.env_id}_{args.seed}"
+
     for update in range(1, num_updates + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
@@ -458,14 +512,29 @@ if __name__ == "__main__":
                     / torch.sqrt(torch.from_numpy(action_rms.var).to(device))
                 )
             ).float()
-            forward_error, _ = icm_model(
-                # obs[step], 
-                # rollout_action, 
-                # next_obs
-                icm_obs,
-                icm_action,
-                icm_next_obs,
-            )
+
+            if args.bonus_type in ["icm", "dynamics"]:
+                forward_error, _ = icm_model(
+                    # obs[step], 
+                    # rollout_action, 
+                    # next_obs
+                    icm_obs,
+                    icm_action,
+                    icm_next_obs,
+                )
+            else:
+                # for disagreement model, we use the estimation variance as bonus
+                _, forward_error = icm_model(
+                    # obs[step], 
+                    # rollout_action, 
+                    # next_obs
+                    icm_obs,
+                    icm_action,
+                    icm_next_obs,
+                )
+            
+            forward_error = forward_error * args.bonus_factor # scale the bonus
+
             curiosity_rewards[step] = forward_error.view(-1)
             
             for idx, d in enumerate(done):
@@ -485,6 +554,9 @@ if __name__ == "__main__":
                         global_step,
                     )
                     writer.add_scalar("charts/episodic_length", info["l"][idx], global_step)
+
+                    performance.append([global_step, info["r"][idx]])
+                    np.save(f"./eipo_results/{np_filename}", performance)
 
         curiosity_reward_per_env = np.array(
             [discounted_reward.update(reward_per_step) for reward_per_step in curiosity_rewards.cpu().data.numpy().T]
@@ -620,8 +692,13 @@ if __name__ == "__main__":
                         / torch.sqrt(torch.from_numpy(action_rms.var).to(device))
                     )
                 ).float()
-                forward_error, inverse_error = icm_model(icm_obs, icm_action, icm_next_obs)
-                forward_loss = forward_error + inverse_error
+
+                if args.bonus_type in ["icm", "dynamics"]:
+                    forward_error, inverse_error = icm_model(icm_obs, icm_action, icm_next_obs)
+                    forward_loss = forward_error + inverse_error
+                else:
+                    error, _ = icm_model(icm_obs, icm_action, icm_next_obs)
+                    forward_loss = error
 
                 mask = torch.rand(len(forward_loss), device=device)
                 mask = (mask < args.update_proportion).type(torch.FloatTensor).to(device)
