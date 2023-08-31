@@ -5,22 +5,17 @@ import subprocess
 parser = argparse.ArgumentParser()
 # parser.add_argument("--bonus_type", default="icm", choices=["icm", "dynamics"])
 parser.add_argument("--gpu", default=1)
-parser.add_argument("--env", default=None, type=str)
 args = parser.parse_args()
 
 lams = [1000.0, 100.0, 50.0, 10.0, 1.0]
 seeds = [4, 3, 2, 1, 0]
 envs = [
-    "Hopper-v2",
-    "Walker2d-v2",
-    "HalfCheetah-v2",
-    "Ant-v2",
-    "Humanoid-v2",
+    "SparseHopper-v2",
+    "SparseWalker2d-v2",
+    "SparseHalfCheetah-v2",
+    "SparseAnt-v2",
+    "SparseHumanoid-v2",
 ]
-
-if args.env is not None:
-    envs = [args.env]
-
 bonus_types = [
     'icm',
     'dynamics',
@@ -40,7 +35,7 @@ for env in envs:
                     f"--bonus_factor {lam}",
                     f"--seed {seed}",
                     f"--bonus_type {bonus_type}",
-                    f"--use-ppo-hyper"
+                    # f"--use-ppo-hyper"
                 ]
 
                 # print(" ".join(command))

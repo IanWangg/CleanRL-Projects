@@ -8,7 +8,7 @@ parser.add_argument("--gpu", default=1)
 parser.add_argument("--env", default=None, type=str)
 args = parser.parse_args()
 
-lams = [1000.0, 100.0, 50.0, 10.0, 1.0]
+lams = [1000.0, 1.0]
 seeds = [4, 3, 2, 1, 0]
 envs = [
     "Hopper-v2",
@@ -22,8 +22,6 @@ if args.env is not None:
     envs = [args.env]
 
 bonus_types = [
-    'icm',
-    'dynamics',
     'disagreement'
 ]
 
@@ -35,12 +33,11 @@ for env in envs:
             for lam in lams:
                 command = [
                     f"CUDA_VISIBLE_DEVICES={args.gpu}",
-                    f"python eipo_rnd_mujoco.py",
+                    f"python eipo_rnd_pointmass.py",
                     f"--env-id {env}",
                     f"--bonus_factor {lam}",
                     f"--seed {seed}",
                     f"--bonus_type {bonus_type}",
-                    f"--use-ppo-hyper"
                 ]
 
                 # print(" ".join(command))
