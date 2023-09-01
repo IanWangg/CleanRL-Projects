@@ -8,7 +8,7 @@ parser.add_argument("--gpu", default=1)
 parser.add_argument("--env", default=None, type=str)
 args = parser.parse_args()
 
-lams = [1000.0, 1.0]
+lams = [1.0]
 seeds = [4, 3, 2, 1, 0]
 envs = [
     "Hopper-v2",

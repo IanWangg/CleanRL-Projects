@@ -6,9 +6,10 @@ parser = argparse.ArgumentParser()
 # parser.add_argument("--bonus_type", default="icm", choices=["icm", "dynamics"])
 parser.add_argument("--gpu", default=1)
 parser.add_argument("--env", default=None, type=str)
+parser.add_argument("--use-ppo-hyper", action='store_true')
 args = parser.parse_args()
 
-lams = [1000.0, 100.0, 50.0, 10.0, 1.0]
+lams = [1.0]
 seeds = [4, 3, 2, 1, 0]
 envs = [
     "Hopper-v2",
@@ -40,7 +41,7 @@ for env in envs:
                     f"--bonus_factor {lam}",
                     f"--seed {seed}",
                     f"--bonus_type {bonus_type}",
-                    f"--use-ppo-hyper"
+                    "--use-ppo-hyper" if args.use_ppo_hyper else "",
                 ]
 
                 # print(" ".join(command))

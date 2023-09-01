@@ -262,6 +262,18 @@ class DisagreementModel(nn.Module):
         preds = torch.stack(preds, dim=0)
 
         return errors, torch.var(preds, dim=0).mean(dim=-1)
+    
+class RewardForwardFilter:
+    def __init__(self, gamma):
+        self.rewems = None
+        self.gamma = gamma
+
+    def update(self, rews):
+        if self.rewems is None:
+            self.rewems = rews
+        else:
+            self.rewems = self.rewems * self.gamma + rews
+        return self.rewems
 
 if __name__ == "__main__":
     args = parse_args()

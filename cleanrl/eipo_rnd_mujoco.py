@@ -115,13 +115,13 @@ def parse_args():
         args.gamma = 0.999
         args.int_gamma = 0.99
     else:
-        args.batch_size = int(args.num_envs * args.num_steps)
-        args.gamma = 0.999
-        args.int_gamma = 0.99
-        args.minibatch_size = 64
         args.update_epochs = 10
         args.num_envs = 32
         args.num_steps = 32
+        args.batch_size = int(args.num_envs * args.num_steps)
+        args.minibatch_size = 64
+        args.gamma = 0.999
+        args.int_gamma = 0.99
     # fmt: on
     return args
 
@@ -375,6 +375,10 @@ if __name__ == "__main__":
     envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, i, capture_video=False, run_name="default", gamma=1.0) for i in range(args.num_envs)]
     )
+
+    # envs = gym.vector.AsyncVectorEnv(
+    #     [make_env(args.env_id, i, capture_video=False, run_name="default", gamma=1.0) for i in range(args.num_envs)]
+    # )
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     envs.num_envs = args.num_envs
@@ -453,7 +457,7 @@ if __name__ == "__main__":
 
     
     performance = []
-    np_filename = f"eipo_{args.bonus_type}_{args.env_id}_{args.seed}{'_ppo_hyper' if args.use_ppo_hyper else ''}"
+    np_filename = f"eipo_{args.bonus_type}_{args.num_envs}_{args.num_steps}_{args.env_id}_{args.seed}{'_ppo_hyper' if args.use_ppo_hyper else ''}"
 
     for update in range(1, num_updates + 1):
         # Annealing the rate if instructed to do so.
@@ -536,7 +540,7 @@ if __name__ == "__main__":
                     icm_next_obs,
                 )
             
-            forward_error = forward_error * args.bonus_factor # scale the bonus
+            forward_error = forward_error # scale the bonus
 
             curiosity_rewards[step] = forward_error.view(-1)
             
