@@ -21,6 +21,8 @@ from gymnasium.wrappers import StepAPICompatibility as step_wrapper
 
 from maps import get_maps
 
+import deque
+
 import copy
 
 def parse_args():
