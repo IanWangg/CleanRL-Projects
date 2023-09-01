@@ -3,6 +3,7 @@ import argparse
 import os
 import random
 import time
+from collections import deque
 from distutils.util import strtobool
 
 import gymnasium as gym
@@ -21,7 +22,7 @@ from gymnasium.wrappers import StepAPICompatibility as step_wrapper
 
 from maps import get_maps
 
-import deque
+import pickle
 
 import copy
 
@@ -132,7 +133,7 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
         if capture_video:
             env = gym.make('PointMaze_UMaze-v3', maze_map=get_maps(env_id), render_mode="rgb_array", max_episode_steps=1000, continuing_task=False)
         else:
-            env = gym.make('PointMaze_UMaze-v3', maze_map=get_maps(env_id))
+            env = gym.make('PointMaze_UMaze-v3', maze_map=get_maps(env_id), max_episode_steps=1000, continuing_task=False)
         
         env = gym.wrappers.FilterObservation(env, ['observation'])
         env = gym.wrappers.FlattenObservation(env)  # deal with dm_control's Dict observation space
@@ -237,6 +238,64 @@ class Agent(nn.Module):
             print("Switch to pi_E")
 
 
+class ICMModel(nn.Module):
+    def __init__(self, envs):
+        super().__init__()
+        state_dim = envs.single_observation_space.shape[0]
+        action_dim = envs.single_action_space.shape[0]
+        self.phi = nn.Sequential(
+            layer_init(nn.Linear(state_dim, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, state_dim)),
+        )
+
+        # predict next_state
+        self.forward_net = nn.Sequential(
+            layer_init(nn.Linear(state_dim + action_dim, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, state_dim))
+        )
+
+        # predict action
+        self.inverse_net = nn.Sequential(
+            layer_init(nn.Linear(state_dim + state_dim, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, 256)),
+            nn.ReLU(),
+            layer_init(nn.Linear(256, action_dim))
+        )
+
+    def forward(self, state, action, next_state):
+        assert state.shape[0] == next_state.shape[0]
+        assert state.shape[0] == action.shape[0]
+
+        batch_size = state.shape[0]
+        all_states = torch.cat([state, next_state], dim=0)
+        encoded_all_states = self.phi(all_states)
+
+        state, next_state = encoded_all_states.split(batch_size, dim=0)
+
+        next_state_hat = self.forward_net(torch.cat([state, action], dim=-1))
+
+        forward_error = torch.norm(next_state - next_state_hat,
+                                   dim=-1,
+                                   p=2,
+                                   keepdim=True)
+
+        # if use dynamics only, we do not train phi based on inverse dynamics
+        if args.bonus_type == "dynamics":
+            return forward_error, torch.zeros_like(forward_error, device=device)
+
+        action_hat = self.inverse_net(torch.cat([state, next_state], dim=-1))
+        inverse_error = torch.norm(action - action_hat,
+                                    dim=-1,
+                                    p=2,
+                                    keepdim=True)
+
+        return forward_error, inverse_error
+
 class DisagreementModel(nn.Module):
     def __init__(self, envs, n_models=5):
         super().__init__()
@@ -264,7 +323,7 @@ class DisagreementModel(nn.Module):
         preds = torch.stack(preds, dim=0)
 
         return errors, torch.var(preds, dim=0).mean(dim=-1)
-    
+
 class RewardForwardFilter:
     def __init__(self, gamma):
         self.rewems = None
@@ -364,8 +423,8 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    # next_obs, _ = envs.reset()
-    next_obs = envs.reset()
+    next_obs, _ = envs.reset(seed=args.seed)
+    # next_obs = envs.reset()
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
     num_updates = args.total_timesteps // args.batch_size
@@ -433,7 +492,7 @@ if __name__ == "__main__":
             # TRY NOT TO MODIFY: execute the game and log data.
             rollout_action = action_e if agent.is_rollout_by_pi_e() else action_ei 
 
-            next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
+            next_obs, reward, terminated, truncated, infos = envs.step(rollout_action.cpu().numpy())
             done = np.logical_or(terminated, truncated)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(done).to(device)
@@ -497,9 +556,11 @@ if __name__ == "__main__":
                 writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                 writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                 # take the negative episode length as return, the shorter the better
-                performance.append([global_step, -item["episode"]["l"]])
+                # print(info["episode"]["l"].shape)
+                performance.append([global_step, info["episode"]["l"][0]])
+                # print(performance)
                 np.save(f"./eipo_pointmass_results/{np_filename}", performance)
-                buffer.append(copy.deepcopy(obs))
+                buffer.append(copy.deepcopy(obs.data.cpu().numpy()))
                 np.save(f"./eipo_buffer/{np_filename}_online_buffer", buffer)
 
         curiosity_reward_per_env = np.array(
