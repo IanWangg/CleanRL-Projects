@@ -7,26 +7,28 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--gpu", default=1)
 parser.add_argument("--env", default=None, type=str)
 parser.add_argument("--use-ppo-hyper", action='store_true')
+parser.add_argument("--seed", default=None, type=int, nargs="*")
+parser.add_argument("--bonus_type", default=None)
 args = parser.parse_args()
 
 lams = [1.0]
-seeds = [4, 3, 2, 1, 0]
+seeds = [4, 3, 2, 1, 0] if args.seed is None else args.seed
 envs = [
     "Hopper-v2",
     "Walker2d-v2",
     "HalfCheetah-v2",
     "Ant-v2",
     "Humanoid-v2",
-]
-
-if args.env is not None:
-    envs = [args.env]
+] if args.env is None else [args.env]
 
 bonus_types = [
     'icm',
     'dynamics',
     'disagreement'
-]
+] if args.bonus_type is None else [args.bonus_type]
+
+print(seeds, envs, bonus_types)
+# raise ValueError
 
 # subprocess.run("conda activate mujoco", check=True, shell=True)
 

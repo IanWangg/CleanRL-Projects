@@ -6,17 +6,12 @@ parser = argparse.ArgumentParser()
 # parser.add_argument("--bonus_type", default="icm", choices=["icm", "dynamics"])
 parser.add_argument("--gpu", default=1)
 parser.add_argument("--env", default=None, type=str)
+parser.add_argument("--seeds", default=None, nargs="*")
 args = parser.parse_args()
 
 lams = [1.0]
-seeds = [4, 3, 2, 1, 0]
-envs = [
-    "Hopper-v2",
-    "Walker2d-v2",
-    "HalfCheetah-v2",
-    "Ant-v2",
-    "Humanoid-v2",
-]
+seeds = [4, 3, 2, 1, 0] if args.seeds is None else args.seeds
+
 
 if args.env is not None:
     envs = [args.env]
